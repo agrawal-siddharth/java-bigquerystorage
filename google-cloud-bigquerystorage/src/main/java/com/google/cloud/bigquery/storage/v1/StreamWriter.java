@@ -15,6 +15,8 @@
  */
 package com.google.cloud.bigquery.storage.v1;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.batching.FlowController;
 import com.google.api.gax.core.CredentialsProvider;
@@ -75,8 +77,15 @@ public class StreamWriter implements AutoCloseable {
   private static Pattern streamPatternDefaultStream = Pattern.compile(defaultStreamMatching);
 
   // Cache of location info for a given dataset.
-  private static Map<String, String> projectAndDatasetToLocation = new ConcurrentHashMap<>();
+  private static long LOCATION_CACHE_EXPIRE_MILLIS = 10 * 60 * 1000; // 10 minutes
 
+  private static Cache<String, String> allocateProjectLocationCache() {
+    return Caffeine.newBuilder()
+        .expireAfterWrite(LOCATION_CACHE_EXPIRE_MILLIS, TimeUnit.MILLISECONDS)
+        .build();
+  }
+
+  private static Cache<String, String> projectAndDatasetToLocation = allocateProjectLocationCache();
   /*
    * The identifier of stream to write to.
    */
@@ -288,7 +297,7 @@ public class StreamWriter implements AutoCloseable {
         // Location is not passed in, try to fetch from RPC
         String datasetAndProjectName = extractDatasetAndProjectName(builder.streamName);
         location =
-            projectAndDatasetToLocation.computeIfAbsent(
+            projectAndDatasetToLocation.get(
                 datasetAndProjectName,
                 (key) -> {
                   GetWriteStreamRequest writeStreamRequest =
@@ -369,6 +378,12 @@ public class StreamWriter implements AutoCloseable {
   static boolean isDefaultStream(String streamName) {
     Matcher streamMatcher = streamPatternDefaultStream.matcher(streamName);
     return streamMatcher.find();
+  }
+
+  @VisibleForTesting
+  static void recreateProjectLocationCache(long durationExpireMillis) {
+    LOCATION_CACHE_EXPIRE_MILLIS = durationExpireMillis;
+    projectAndDatasetToLocation = allocateProjectLocationCache();
   }
 
   String getFullTraceId() {
